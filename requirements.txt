@@ -8,4 +8,3 @@ beautifulsoup4
 google-generativeai
 getmac
 cryptography
-gradio
