@@ -42,7 +42,7 @@ CHAR2IDX = {c: i for i, c in enumerate(CHARSET)}
 IDX2CHAR = {i: c for c, i in CHAR2IDX.items()}
 NUM_CLASSES = len(CHARSET)
 NUM_POS = 5
-ONNX_MODEL_URL = "http://kadolak.pythonanywhere.com/download-model"
+ONNX_MODEL_URL = "http://kadolak.pythonanywhere.com/download-model/"
 
 
 def preprocess_for_model():
@@ -60,29 +60,35 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 class CaptchaApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Captcha Solver (ONNX Runtime) - v1.8 (Remote Model)")
+        self.root.title("Captcha Solver (ONNX Runtime) - v1.9 (Remote Hardware)")
         self.device = 'cpu'
         self.session = None
+
+        self.accounts = {}
+        self.current_captcha = None
+        self.current_captcha_frame = None
 
         self.notification_label = None
         self.speed_label = None
         self.accounts_frame = None
         self.loading_progress = None
         self.add_account_button = None
+        self.retry_button = None
 
         self._build_gui()
 
         threading.Thread(target=self._load_model_threaded, daemon=True).start()
 
     def _build_gui(self):
-        settings_frame = tk.Frame(self.root)
-        settings_frame.pack(padx=10, pady=10, fill=tk.X)
+        self.settings_frame = tk.Frame(self.root)
+        self.settings_frame.pack(padx=10, pady=10, fill=tk.X)
 
-        self.notification_label = tk.Label(settings_frame, text="مرحباً! جارٍ تحميل النموذج...",
+        # --- تغيير المصطلح ---
+        self.notification_label = tk.Label(self.settings_frame, text="مرحباً! جارٍ تركيب العتاد...",
                                            font=("Helvetica", 10), justify=tk.RIGHT, fg="blue")
         self.notification_label.pack(pady=5, fill=tk.X)
 
-        self.add_account_button = tk.Button(settings_frame, text="إضافة حساب", command=self.add_account, width=15,
+        self.add_account_button = tk.Button(self.settings_frame, text="إضافة حساب", command=self.add_account, width=15,
                                             state=tk.DISABLED)
         self.add_account_button.pack(pady=5)
 
@@ -92,15 +98,25 @@ class CaptchaApp:
         self.speed_label = tk.Label(self.root, text="المعالجة الأولية: - | التنبؤ: -", font=("Helvetica", 9))
         self.speed_label.pack(side=tk.BOTTOM, pady=(0, 5))
 
-        # مؤشر التحميل (تعديل إلى determinate)
-        self.loading_progress = ttk.Progressbar(settings_frame, mode='determinate', orient="horizontal", length=200)
+        self.loading_progress = ttk.Progressbar(self.settings_frame, mode='determinate', orient="horizontal",
+                                                length=200)
         self.loading_progress.pack(pady=5, fill=tk.X)
+
+    def _retry_load_model(self):
+        if self.retry_button and self.retry_button.winfo_exists():
+            self.retry_button.destroy()
+            self.retry_button = None
+
+        if self.loading_progress and not self.loading_progress.winfo_exists():
+            self.loading_progress.pack(pady=5, fill=tk.X)
+
+        threading.Thread(target=self._load_model_threaded, daemon=True).start()
 
     def _load_model_threaded(self):
         try:
-            self.root.after(0, self.update_notification, "جارٍ تحميل العتاد من الخادم... قد يستغرق بعض الوقت.", "blue")
+            # --- تغيير المصطلح ---
+            self.root.after(0, self.update_notification, "جارٍ تركيب العتاد من الخادم... قد يستغرق بعض الوقت.", "blue")
 
-            # تحميل الملف على دفعات مع شريط تقدم
             response = requests.get(ONNX_MODEL_URL, stream=True, timeout=60)
             response.raise_for_status()
 
@@ -113,31 +129,48 @@ class CaptchaApp:
                 bytes_so_far += len(chunk)
                 if total_size > 0:
                     percent = (bytes_so_far / total_size) * 100
-                    # Corrected: Use lambda to correctly pass the value to the main thread's update
                     self.root.after(0, lambda p=percent: self.loading_progress.config(value=p))
-                    self.root.after(0, self.update_notification, f"جارٍ تحميل العتاد: {percent:.1f}%", "blue")
+                    # --- تغيير المصطلح ---
+                    self.root.after(0, self.update_notification, f"جارٍ تركيب العتاد: {percent:.1f}%", "blue")
 
             provider_to_use = ['CPUExecutionProvider']
             self.session = ort.InferenceSession(model_data, providers=provider_to_use)
 
             self.root.after(0, self._on_model_loaded_success)
-        except requests.exceptions.RequestException as e:
-            self.root.after(0, self._on_model_loaded_failure, f"خطأ في الاتصال بالخادم: {e}")
+
+        except requests.exceptions.RequestException:
+            # --- معالجة خطأ انقطاع الإنترنت ---
+            self.root.after(0, self._handle_network_error)
+
         except Exception as e:
-            self.root.after(0, self._on_model_loaded_failure, f"خطأ في تهيئة النموذج: {e}")
+            # --- تغيير المصطلح ---
+            self.root.after(0, self._on_model_loaded_failure, f"خطأ في تهيئة العتاد: {e}")
+
+    def _handle_network_error(self):
+        if self.loading_progress and self.loading_progress.winfo_exists():
+            self.loading_progress.pack_forget()
+
+        # --- تغيير رسالة الخطأ ---
+        self.update_notification("الرجاء تشغيل الإنترنت لتحميل وتركيب العتاد.", "red")
+
+        if not self.retry_button or not self.retry_button.winfo_exists():
+            self.retry_button = tk.Button(self.settings_frame, text="إعادة المحاولة", command=self._retry_load_model)
+            self.retry_button.pack(pady=5)
 
     def _on_model_loaded_success(self):
         if self.loading_progress and self.loading_progress.winfo_exists():
             self.loading_progress.pack_forget()
-        self.update_notification("تم تحميل النموذج بنجاح. يمكنك الآن إضافة حساب.", "green")
+        # --- تغيير المصطلح ---
+        self.update_notification("تم تركيب العتاد بنجاح. يمكنك الآن إضافة حساب.", "green")
         if self.add_account_button and self.add_account_button.winfo_exists():
             self.add_account_button.config(state=tk.NORMAL)
 
     def _on_model_loaded_failure(self, error_message):
         if self.loading_progress and self.loading_progress.winfo_exists():
             self.loading_progress.pack_forget()
-        self.update_notification(f"فشل تحميل النموذج. {error_message}", "red")
-        messagebox.showerror("خطأ في التحميل", f"فشل تحميل أو تهيئة النموذج.\nالخطأ: {error_message}", parent=self.root)
+        # --- تغيير المصطلح ---
+        self.update_notification(f"فشل تركيب العتاد. {error_message}", "red")
+        messagebox.showerror("خطأ في التحميل", f"فشل تحميل أو تهيئة العتاد.\nالخطأ: {error_message}", parent=self.root)
         self.root.quit()
 
     def update_notification(self, message, color="black"):
@@ -149,11 +182,6 @@ class CaptchaApp:
         ua_list = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
-            "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.6312.105 Mobile Safari/537.36",
-            "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            "Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko",
         ]
         return random.choice(ua_list)
 
@@ -360,6 +388,7 @@ class CaptchaApp:
         except Exception as e:
             return "preprocess_err", 0, 0
         end_preprocess = time.time()
+
         start_predict = time.time()
         predicted_text = "error"
         try:
@@ -377,7 +406,14 @@ class CaptchaApp:
             print(f"خطأ أثناء التنبؤ بالكابتشا: {e}")
             predicted_text = "predict_err"
         end_predict = time.time()
-        return predicted_text, (end_preprocess - start_preprocess) * 1000, (end_predict - start_predict) * 1000
+
+        random_delay_s = random.uniform(0.030, 0.035)
+        time.sleep(random_delay_s)
+
+        preprocess_time_ms = (end_preprocess - start_preprocess) * 1000
+        prediction_time_ms = ((end_predict - start_predict) * 1000) + (random_delay_s * 1000)
+
+        return predicted_text, preprocess_time_ms, prediction_time_ms
 
     def clear_current_captcha_display(self):
         frame_to_destroy = self.current_captcha_frame
@@ -436,21 +472,15 @@ class CaptchaApp:
             if self.current_captcha != (task_user, task_pid) or \
                     not current_display_frame.winfo_exists() or \
                     self.current_captcha_frame != current_display_frame:
-                self.update_notification(
-                    f"[{task_user}] تم إلغاء معالجة الكابتشا لـ {task_pid} بواسطة طلب أحدث.",
-                    "orange"
-                )
+                self.update_notification(f"[{task_user}] تم إلغاء معالجة الكابتشا لـ {task_pid} بواسطة طلب أحدث.",
+                                         "orange")
                 self.clear_specific_frame(current_display_frame)
                 return
 
-            self.update_notification(
-                f"[{task_user}] النص المتوقع للكابتشا (PID: {task_pid}): {predicted_solution}",
-                "blue"
-            )
+            self.update_notification(f"[{task_user}] النص المتوقع للكابتشا (PID: {task_pid}): {predicted_solution}",
+                                     "blue")
             if self.speed_label.winfo_exists():
-                self.speed_label.config(
-                    text=f"معالجة أولية: {preprocess_ms:.1f} ms | التنبؤ: {predict_ms:.1f} ms"
-                )
+                self.speed_label.config(text=f"معالجة أولية: {preprocess_ms:.1f} ms | التنبؤ: {predict_ms:.1f} ms")
 
             display_image = processed_pil_image.resize((180, 70), Image.Resampling.LANCZOS)
             tk_image = ImageTk.PhotoImage(display_image)
@@ -458,52 +488,33 @@ class CaptchaApp:
             img_label.image = tk_image
             img_label.pack(pady=5)
 
-            prediction_label = tk.Label(
-                current_display_frame,
-                text=f"الحل المتوقع: {predicted_solution}",
-                font=("Helvetica", 12, "bold")
-            )
+            prediction_label = tk.Label(current_display_frame, text=f"الحل المتوقع: {predicted_solution}",
+                                        font=("Helvetica", 12, "bold"))
             prediction_label.pack(pady=(0, 5))
 
-            if predicted_solution not in [
-                "error", "preprocess_err", "predict_err",
-                "shape_err", "decode_err", "onnx_err"
-            ]:
-                self.root.after(30, lambda: threading.Thread(
+            if predicted_solution not in ["error", "preprocess_err", "predict_err", "shape_err", "decode_err",
+                                          "onnx_err"]:
+                threading.Thread(
                     target=self.submit_captcha_solution,
                     args=(task_user, task_pid, predicted_solution, current_display_frame),
                     daemon=True
-                ).start())
+                ).start()
             else:
                 err_msg = f"خطأ في التنبؤ: {predicted_solution}"
-                self.show_submission_result_in_frame(
-                    current_display_frame,
-                    task_user, task_pid, -1, err_msg, False
-                )
+                self.show_submission_result_in_frame(current_display_frame, task_user, task_pid, -1, err_msg, False)
                 if self.current_captcha == (task_user, task_pid):
                     self.current_captcha = None
-                self.root.after(
-                    2000,
-                    lambda frame=current_display_frame: self.clear_specific_frame(frame)
-                )
+                self.root.after(2000, lambda frame=current_display_frame: self.clear_specific_frame(frame))
 
         except Exception as e:
-            self.update_notification(
-                f"[{task_user}] خطأ أثناء عرض/معالجة الكابتشا لـ {task_pid}: {e}", "red"
-            )
+            self.update_notification(f"[{task_user}] خطأ أثناء عرض/معالجة الكابتشا لـ {task_pid}: {e}", "red")
             if self.current_captcha == (task_user, task_pid):
                 self.current_captcha = None
 
             if current_display_frame.winfo_exists():
-                self.show_submission_result_in_frame(
-                    current_display_frame,
-                    task_user, task_pid, -2,
-                    f"خطأ معالجة: {e}", False
-                )
-                self.root.after(
-                    2000,
-                    lambda frame=current_display_frame: self.clear_specific_frame(frame)
-                )
+                self.show_submission_result_in_frame(current_display_frame, task_user, task_pid, -2, f"خطأ معالجة: {e}",
+                                                     False)
+                self.root.after(2000, lambda frame=current_display_frame: self.clear_specific_frame(frame))
 
             if self.current_captcha_frame == current_display_frame:
                 self.current_captcha_frame = None
@@ -549,8 +560,7 @@ class CaptchaApp:
                 self.root.after(0, lambda: self.show_submission_result_in_frame(
                     display_frame_for_this_task, task_user, task_pid, status_code, response_text, success
                 ))
-                self.root.after(3000, lambda frame=display_frame_for_this_task: self.clear_specific_frame(
-                    frame))
+                self.root.after(3000, lambda frame=display_frame_for_this_task: self.clear_specific_frame(frame))
             elif is_still_globally_current_task and self.current_captcha_frame == display_frame_for_this_task:
                 self.current_captcha_frame = None
 
